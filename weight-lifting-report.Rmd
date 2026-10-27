@@ -1,0 +1,97 @@
+---
+title: "Predicting Weight Lifting Exercise Quality"
+author: "Shouryaman Singh"
+output: html_document
+---
+
+## Overview
+
+This analysis predicts the manner in which six participants performed barbell lifts, represented by the `classe` variable (A–E). I used sensor measurements from the training data to fit a random forest, evaluated it with three-fold cross-validation and a separate validation set, and predicted the 20 supplied test cases.
+
+## Data preparation
+
+```{r setup, message=FALSE, warning=FALSE}
+library(caret)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+training <- read.csv("pml-training.csv",
+                     na.strings = c("", "NA", "#DIV/0!"))
+testing <- read.csv("pml-testing.csv",
+                    na.strings = c("", "NA", "#DIV/0!"))
+training$classe <- factor(training$classe)
+
+sensor_columns <- names(training)[8:(ncol(training) - 1)]
+sensor_columns <- sensor_columns[
+  sapply(training[sensor_columns], is.numeric) &
+  sapply(training[sensor_columns], function(x) all(!is.na(x))) &
+  sapply(testing[sensor_columns], function(x) all(!is.na(x)))
+]
+
+model_data <- training[, c(sensor_columns, "classe")]
+```
+
+The training data contain `r nrow(training)` observations. I excluded the first seven columns, which contain record identifiers and related metadata, and excluded measurements with missing values or unavailable values in the test cases. This left `r length(sensor_columns)` numeric sensor predictors. The outcome was not used as a predictor.
+
+```{r class-counts}
+knitr::kable(
+  data.frame(Class = names(table(model_data$classe)),
+             Count = as.integer(table(model_data$classe))),
+  caption = "Training observations by exercise class"
+)
+```
+
+## Model and validation
+
+I used a stratified random split: 75% of the labeled observations for model training and 25% for a final validation check. Within the training portion, `caret` performed three-fold cross-validation. The model was a random forest with 100 trees and `mtry = 7` (seven candidate predictors at each split). Random forests can capture nonlinear relationships among sensor measurements without requiring their scales to be standardized.
+
+```{r model, cache=TRUE}
+set.seed(2026)
+split <- createDataPartition(model_data$classe, p = 0.75, list = FALSE)
+model_train <- model_data[split, ]
+model_check <- model_data[-split, ]
+
+set.seed(2026)
+cv_control <- trainControl(method = "cv", number = 3)
+rf_model <- train(
+  classe ~ .,
+  data = model_train,
+  method = "rf",
+  trControl = cv_control,
+  tuneGrid = data.frame(mtry = 7),
+  ntree = 100
+)
+```
+
+The model was trained on `r nrow(model_train)` observations. Its mean cross-validation accuracy was `r round(100 * rf_model$results$Accuracy[1], 2)`%. I fixed `mtry` before validation rather than searching many settings on the validation data.
+
+## Out-of-sample performance
+
+I predicted the `r nrow(model_check)` held-out observations only after fitting the model. The table compares predicted classes (rows) with actual classes (columns).
+
+```{r validation}
+check_predictions <- predict(rf_model, newdata = model_check)
+check_results <- confusionMatrix(check_predictions, model_check$classe)
+knitr::kable(as.data.frame.matrix(check_results$table),
+             caption = "Validation confusion matrix: predicted versus actual class")
+```
+
+Validation accuracy was `r round(100 * unname(check_results$overall["Accuracy"]), 2)`%, corresponding to an estimated out-of-sample error of `r round(100 * (1 - unname(check_results$overall["Accuracy"])), 2)`% for a similar random split of observations. This estimate may be optimistic for entirely new participants because observations from the same six people can occur in both training and validation portions.
+
+## Predictions for the 20 test cases
+
+```{r predictions}
+test_predictions <- predict(rf_model, newdata = testing[, sensor_columns])
+knitr::kable(
+  data.frame(
+    Problem_ID = testing$problem_id,
+    Predicted_classe = as.character(test_predictions)
+  ),
+  caption = "Predicted exercise class for each supplied test case"
+)
+```
+
+## Conclusion
+
+The sensor-based random forest distinguished the five exercise classes with high accuracy on the held-out observations. Its validation error is an estimate for cases similar to these data, subject to the limitation that the six participants are represented across the random split.
+
+Data source: Weight Lifting Exercises Dataset, Human Activity Recognition research group, Pontifical Catholic University of Rio de Janeiro. Training and testing CSV files were supplied with the Coursera Practical Machine Learning course project.
